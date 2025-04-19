@@ -1,0 +1,74 @@
+John Smith
+123 Main Street, Anytown, US 12345
+Phone: (555) 123-4567
+Email: john.smith@email.com
+LinkedIn: linkedin.com/in/johnsmith
+
+PROFESSIONAL SUMMARY
+Dedicated and detail-oriented software engineer with 5 years of experience in full-stack development. Proficient in JavaScript, Python, and React.js with a focus on creating efficient, scalable, and user-friendly web applications. Strong problem-solving skills and commitment to delivering high-quality code.
+
+SKILLS
+Programming Languages: JavaScript, Python, Java, HTML5, CSS3
+Frameworks/Libraries: React.js, Node.js, Express.js, Django
+Tools: Git, Docker, Jenkins, AWS, Jira
+Databases: MongoDB, PostgreSQL, MySQL
+Methodologies: Agile, Scrum, Test-Driven Development
+
+PROFESSIONAL EXPERIENCE
+
+Senior Software Engineer
+ABC Tech Solutions, Anytown, US
+January 2021 - Present
+
+- Led the development of a customer-facing e-commerce platform, resulting in a 35% increase in online sales
+- Implemented optimized database queries that reduced API response times by 40%
+- Mentored junior developers and conducted code reviews for team of 6 developers
+- Collaborated with product managers and designers to translate requirements into technical specifications
+- Integrated third-party payment gateways ensuring PCI compliance and secure transactions
+
+Software Developer
+XYZ Software Inc., Othertown, US
+June 2018 - December 2020
+
+- Developed and maintained RESTful APIs using Node.js and Express
+- Built responsive user interfaces using React.js and Redux
+- Implemented unit and integration testing using Jest and React Testing Library
+- Participated in agile development cycles including sprint planning and retrospectives
+- Collaborated with the QA team to resolve bugs and improve application stability
+
+Junior Developer
+Tech Startups LLC, Smalltown, US
+May 2017 - May 2018
+
+- Assisted in developing front-end components using HTML, CSS, and JavaScript
+- Fixed bugs and implemented minor features for web applications
+- Participated in code reviews and team meetings
+- Documented code and processes for knowledge sharing
+
+EDUCATION
+
+Bachelor of Science in Computer Science
+University of Technology, Techville, US
+Graduated: May 2017
+
+- GPA: 3.8/4.0
+- Relevant Coursework: Data Structures, Algorithms, Database Systems, Web Development
+- Senior Project: Developed a mobile application for campus navigation
+
+CERTIFICATIONS
+
+- AWS Certified Developer Associate, 2022
+- MongoDB Certified Developer, 2021
+- Certified Scrum Master, 2020
+
+PROJECTS
+
+E-commerce Platform (2022)
+- Built a full-stack e-commerce application using MERN stack
+- Implemented features like user authentication, product catalog, and payment processing
+- Utilized Redis for caching to improve performance
+
+Task Management System (2020)
+- Developed a task management application using Django and React
+- Implemented drag-and-drop functionality for task organization
+- Integrated with Google Calendar API for scheduling 

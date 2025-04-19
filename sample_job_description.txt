@@ -1,0 +1,52 @@
+Senior Full Stack Developer
+
+About Us:
+TechInnovate Inc. is a fast-growing technology company specializing in cloud-based enterprise solutions. We are looking for a talented Senior Full Stack Developer to join our engineering team and help us build the next generation of our flagship product.
+
+Job Description:
+We are seeking an experienced Full Stack Developer with expertise in modern web technologies to design, develop, and maintain our cloud-based applications. The ideal candidate will have a strong background in JavaScript frameworks, particularly React and Node.js, and experience with cloud infrastructure.
+
+Responsibilities:
+• Design and develop responsive, scalable web applications using React.js and Node.js
+• Build and maintain RESTful APIs and microservices
+• Optimize application performance and ensure high availability
+• Implement security best practices and data protection measures
+• Collaborate with UX/UI designers to implement intuitive user interfaces
+• Participate in code reviews and provide constructive feedback
+• Mentor junior developers and promote best practices
+• Contribute to the continuous improvement of our development processes
+• Work in an Agile environment with daily standups and sprint planning
+
+Requirements:
+• Bachelor's degree in Computer Science, Software Engineering, or related field
+• 5+ years of experience in full-stack development
+• Strong proficiency in JavaScript, HTML5, and CSS3
+• Extensive experience with React.js, Redux, and related ecosystem
+• Proficiency with Node.js and Express.js for backend development
+• Experience with RESTful API design and implementation
+• Knowledge of at least one SQL database (PostgreSQL preferred) and NoSQL databases (MongoDB)
+• Familiarity with DevOps tools such as Docker, Jenkins, and AWS
+• Experience with version control systems (Git)
+• Strong understanding of web security principles
+• Experience with test-driven development and testing frameworks
+• Knowledge of CI/CD pipelines and automated testing
+
+Preferred Qualifications:
+• Experience with TypeScript and GraphQL
+• Knowledge of cloud services (AWS, Azure, or GCP)
+• Experience with containerization and orchestration tools (Docker, Kubernetes)
+• Familiarity with serverless architecture
+• Experience with WebSocket for real-time applications
+• Understanding of accessibility standards and compliance
+• Contributions to open-source projects
+
+Benefits:
+• Competitive salary and comprehensive benefits package
+• Flexible work arrangements and remote work options
+• Professional development budget
+• Health, dental, and vision insurance
+• 401(k) matching
+• Paid time off and holidays
+• Modern office with amenities
+
+TechInnovate Inc. is an equal opportunity employer. We celebrate diversity and are committed to creating an inclusive environment for all employees. 

@@ -1,0 +1,101 @@
+.stApp {
+    font-family: 'Inter', sans-serif;
+    color: #333333;
+}
+
+.main-header {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: #1E88E5;
+    margin-bottom: 1rem;
+}
+
+.section-header {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #1976D2;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.metric-container {
+    background-color: #f0f8ff;
+    border-radius: 5px;
+    padding: 1rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    color: #333333;
+}
+
+.keyword-section {
+    background-color: #f9f9f9;
+    border-radius: 5px;
+    padding: 1rem;
+    margin-top: 1rem;
+    border-left: 4px solid #1976D2;
+    color: #333333;
+}
+
+.download-btn {
+    background-color: #1976D2;
+    color: white !important;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    font-weight: 500;
+    display: inline-block;
+    margin-top: 1rem;
+    text-decoration: none;
+    transition: background-color 0.3s;
+}
+
+.download-btn:hover {
+    background-color: #1565C0;
+    color: white !important;
+}
+
+.suggestions-section {
+    background-color: #e1f5fe;
+    border-radius: 5px;
+    padding: 1rem;
+    margin-top: 1rem;
+    color: #333333;
+}
+
+.resume-guidelines {
+    background-color: #f5f5f5;
+    border-radius: 5px;
+    padding: 1.5rem;
+    margin-top: 1.5rem;
+    line-height: 1.6;
+    color: #333333;
+}
+
+.footer {
+    margin-top: 3rem;
+    text-align: center;
+    color: #757575;
+    font-size: 0.8rem;
+}
+
+/* Fix Streamlit specific elements */
+.st-emotion-cache-13ejsyy {
+    color: #333333;
+}
+
+.st-emotion-cache-183lzff {
+    color: #333333;
+}
+
+/* Override any white text on white background */
+.st-cb, .st-ae, .st-af, .st-ag, .st-ah, .st-ai, .st-aj {
+    color: #333333 !important;
+}
+
+/* Make sure links are visible */
+a {
+    color: #1976D2 !important;
+}
+
+/* Fix text in text areas and inputs */
+.stTextInput, .stTextArea {
+    color: #333333;
+} 
