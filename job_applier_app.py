@@ -1,11 +1,15 @@
 """Streamlit UI for the Job Applier tool.
 
-Provides a multi-step interface:
-1. Configure API keys
+Free stack — only requires an Anthropic API key.
+Uses local Playwright for browser automation and Claude for AI.
+
+6-step wizard:
+1. Configure API key (just ANTHROPIC_API_KEY)
 2. Set up applicant profile
-3. Choose search mode and run job discovery
+3. Choose search mode and scrape jobs
 4. Review found jobs and select which to apply to
-5. Monitor application progress and results
+5. Monitor application progress
+6. View results
 """
 
 import asyncio
@@ -21,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from job_applier.config import Config
 from job_applier.applicant_profile import ApplicantProfile
-from job_applier.exa_search import ExaJobSearch, Company, JobListing
+from job_applier.job_scraper import JobScraper, JobListing
 from job_applier.browser_agent import BrowserAgent, ApplicationResult
 from job_applier.job_applier import JobApplier, SearchMode
 
@@ -71,6 +75,16 @@ def load_css():
             padding-bottom: 0.4rem;
             margin-bottom: 1rem;
         }
+        .free-badge {
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            display: inline-block;
+            margin-left: 8px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -82,16 +96,12 @@ def init_session_state():
     defaults = {
         "config": None,
         "profile": ApplicantProfile(),
-        "companies": [],
         "jobs": [],
         "selected_jobs": [],
         "applications": [],
         "status_log": [],
-        "step": "config",  # config -> profile -> search -> review -> apply -> results
-        "search_mode": SearchMode.DIRECT,
-        "search_query": "",
-        "is_searching": False,
-        "is_applying": False,
+        "step": "config",
+        "search_mode": SearchMode.ALL_BOARDS,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -113,7 +123,7 @@ def render_sidebar():
         st.markdown("### Navigation")
 
         steps = [
-            ("config", "1. API Keys"),
+            ("config", "1. Setup"),
             ("profile", "2. Your Profile"),
             ("search", "3. Find Jobs"),
             ("review", "4. Review Jobs"),
@@ -122,12 +132,13 @@ def render_sidebar():
         ]
         for step_key, label in steps:
             is_current = st.session_state.step == step_key
-            prefix = "**>** " if is_current else "   "
+            prefix = ">> " if is_current else "   "
             if st.button(f"{prefix}{label}", key=f"nav_{step_key}", use_container_width=True):
                 st.session_state.step = step_key
                 st.rerun()
 
         st.markdown("---")
+        st.markdown("**Stack:** Playwright + Claude")
         st.markdown(
             "[Resume Optimizer](/) | **Job Applier**",
             unsafe_allow_html=True,
@@ -135,58 +146,46 @@ def render_sidebar():
 
 
 def render_config_step():
-    """Step 1: Configure API keys."""
-    st.markdown('<div class="step-header">Step 1: API Configuration</div>', unsafe_allow_html=True)
+    """Step 1: Configure API key."""
+    st.markdown('<div class="step-header">Step 1: Setup</div>', unsafe_allow_html=True)
     st.markdown(
-        "Enter your API keys below. These are needed to search for jobs (Exa) "
-        "and automate browser-based applications (Browserbase + Stagehand)."
+        'Only one API key needed. <span class="free-badge">FREE TOOLS</span>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        "**How it works:**\n"
+        "- **Playwright** (free, local) runs a browser on your machine to scrape "
+        "job boards and fill out application forms\n"
+        "- **Claude** (Anthropic API) understands page content, extracts job listings "
+        "from HTML, and figures out how to fill application forms"
+    )
+
+    st.markdown("---")
+
+    anthropic_key = st.text_input(
+        "Anthropic API Key",
+        value=os.getenv("ANTHROPIC_API_KEY", ""),
+        type="password",
+        help="Get one at console.anthropic.com",
     )
 
     col1, col2 = st.columns(2)
-
     with col1:
-        st.markdown("**Exa API** — [Get a free key](https://exa.ai)")
-        exa_key = st.text_input(
-            "Exa API Key",
-            value=os.getenv("EXA_API_KEY", ""),
-            type="password",
-            key="exa_key",
+        claude_model = st.selectbox(
+            "Claude Model",
+            ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
+            index=0,
+            help="Sonnet is the best balance of speed and quality. Haiku is cheapest.",
         )
-
     with col2:
-        st.markdown("**Browserbase** — [Sign up](https://browserbase.com)")
-        bb_key = st.text_input(
-            "Browserbase API Key",
-            value=os.getenv("BROWSERBASE_API_KEY", ""),
-            type="password",
-            key="bb_key",
-        )
-        bb_project = st.text_input(
-            "Browserbase Project ID",
-            value=os.getenv("BROWSERBASE_PROJECT_ID", ""),
-            key="bb_project",
-        )
-
-    st.markdown("**LLM for browser agent** (OpenAI, Google, etc.)")
-    model_key = st.text_input(
-        "Model API Key",
-        value=os.getenv("MODEL_API_KEY", ""),
-        type="password",
-        key="model_key",
-    )
-    model_name = st.text_input(
-        "Model name",
-        value=os.getenv("STAGEHAND_MODEL", "google/gemini-2.0-flash"),
-        key="model_name",
-    )
+        headless = st.checkbox("Headless browser", value=True, help="Uncheck to see the browser window")
 
     if st.button("Save & Continue", type="primary"):
         config = Config(
-            exa_api_key=exa_key,
-            browserbase_api_key=bb_key,
-            browserbase_project_id=bb_project,
-            model_api_key=model_key,
-            model_name=model_name,
+            anthropic_api_key=anthropic_key,
+            claude_model=claude_model,
+            headless=headless,
         )
         errors = config.validate()
         if errors:
@@ -255,12 +254,11 @@ def render_profile_step():
         "Desired Locations",
         value=", ".join(profile.desired_locations) if profile.desired_locations else "Remote",
     )
-    profile.desired_locations = [l.strip() for l in locations_text.split(",") if l.strip()]
+    profile.desired_locations = [loc.strip() for loc in locations_text.split(",") if loc.strip()]
 
     st.markdown("**Resume**")
     uploaded_resume = st.file_uploader("Upload your resume (PDF)", type=["pdf"])
     if uploaded_resume:
-        # Save uploaded resume
         resume_dir = os.path.dirname(os.path.abspath(__file__))
         resume_path = os.path.join(resume_dir, "uploaded_resume.pdf")
         with open(resume_path, "wb") as f:
@@ -271,9 +269,7 @@ def render_profile_step():
         st.info(f"Using previously uploaded resume: {os.path.basename(profile.resume_path)}")
 
     st.markdown("**Cover Letter Template**")
-    st.markdown(
-        "*Use `{company}`, `{title}`, and `{name}` as placeholders.*",
-    )
+    st.markdown("*Use `{company}`, `{title}`, and `{name}` as placeholders.*")
     profile.cover_letter_template = st.text_area(
         "Cover Letter Template",
         value=profile.cover_letter_template,
@@ -321,24 +317,28 @@ def render_search_step():
     st.markdown('<div class="step-header">Step 3: Find Jobs</div>', unsafe_allow_html=True)
 
     if not st.session_state.config:
-        st.warning("Please configure your API keys first.")
+        st.warning("Please configure your API key first.")
         return
 
     mode = st.radio(
         "Search Mode",
         [
-            SearchMode.DIRECT,
-            SearchMode.COMPANIES,
-            SearchMode.JOB_BOARDS,
+            SearchMode.ALL_BOARDS,
+            SearchMode.INDEED,
+            SearchMode.LINKEDIN,
+            SearchMode.GOOGLE,
+            SearchMode.CAREERS_PAGE,
             SearchMode.URLS,
         ],
         format_func={
-            SearchMode.DIRECT: "Search jobs directly",
-            SearchMode.COMPANIES: "Discover companies, then find their jobs",
-            SearchMode.JOB_BOARDS: "Search job boards (LinkedIn, Indeed, etc.)",
+            SearchMode.ALL_BOARDS: "All job boards (Indeed + LinkedIn + Google)",
+            SearchMode.INDEED: "Indeed only",
+            SearchMode.LINKEDIN: "LinkedIn only",
+            SearchMode.GOOGLE: "Google Jobs only",
+            SearchMode.CAREERS_PAGE: "Specific company careers page",
             SearchMode.URLS: "Apply to specific URLs",
         }.get,
-        horizontal=True,
+        horizontal=False,
     )
     st.session_state.search_mode = mode
 
@@ -346,7 +346,10 @@ def render_search_step():
         urls_text = st.text_area(
             "Enter job URLs (one per line)",
             height=150,
-            placeholder="https://company.com/careers/job-123\nhttps://boards.greenhouse.io/company/jobs/456",
+            placeholder=(
+                "https://company.com/careers/job-123\n"
+                "https://boards.greenhouse.io/company/jobs/456"
+            ),
         )
         if st.button("Add Jobs", type="primary"):
             urls = [u.strip() for u in urls_text.strip().split("\n") if u.strip()]
@@ -357,120 +360,97 @@ def render_search_step():
             st.rerun()
         return
 
-    if mode == SearchMode.JOB_BOARDS:
-        col1, col2 = st.columns(2)
-        with col1:
-            job_title = st.text_input(
-                "Job Title",
-                value=st.session_state.profile.desired_titles[0]
+    if mode == SearchMode.CAREERS_PAGE:
+        careers_url = st.text_input(
+            "Careers page URL",
+            placeholder="https://company.com/careers",
+        )
+        if st.button("Scrape Careers Page", type="primary"):
+            if not careers_url:
+                st.warning("Enter a URL.")
+                return
+            _run_search(mode, careers_url=careers_url)
+        return
+
+    # Job board search modes
+    col1, col2 = st.columns(2)
+    with col1:
+        job_title = st.text_input(
+            "Job Title",
+            value=(
+                st.session_state.profile.desired_titles[0]
                 if st.session_state.profile.desired_titles
-                else "",
-            )
-        with col2:
-            location = st.text_input(
-                "Location",
-                value=st.session_state.profile.desired_locations[0]
+                else ""
+            ),
+            placeholder="e.g. Software Engineer",
+        )
+    with col2:
+        location = st.text_input(
+            "Location",
+            value=(
+                st.session_state.profile.desired_locations[0]
                 if st.session_state.profile.desired_locations
-                else "Remote",
-            )
-        query = f"{job_title}|{location}"
-    else:
-        placeholders = {
-            SearchMode.DIRECT: "e.g. Senior Python engineer remote positions at startups",
-            SearchMode.COMPANIES: "e.g. AI startups in San Francisco hiring engineers",
-        }
-        query = st.text_input(
-            "Search Query",
-            placeholder=placeholders.get(mode, ""),
+                else "Remote"
+            ),
         )
 
-    num_results = st.slider("Number of results", 5, 50, 15)
+    num_results = st.slider("Max results per board", 5, 30, 15)
 
     if st.button("Search", type="primary"):
-        if not query:
-            st.warning("Please enter a search query.")
+        if not job_title:
+            st.warning("Enter a job title.")
             return
+        _run_search(mode, job_title=job_title, location=location, num_results=num_results)
 
-        config = st.session_state.config
-        config.max_companies = num_results
 
-        with st.spinner("Searching with Exa AI..."):
-            try:
-                exa = ExaJobSearch(config)
+def _run_search(mode, job_title="", location="Remote", careers_url="", num_results=15):
+    """Execute the search and store results."""
+    config = st.session_state.config
+    config.max_results_per_board = num_results
+    profile = st.session_state.profile
 
-                if mode == SearchMode.DIRECT:
-                    jobs = exa.search_jobs(query=query, num_results=num_results)
-                    st.session_state.jobs = jobs
-                    st.session_state.companies = []
-                elif mode == SearchMode.COMPANIES:
-                    companies = exa.discover_and_enrich(company_query=query)
-                    st.session_state.companies = companies
-                    st.session_state.jobs = []
-                elif mode == SearchMode.JOB_BOARDS:
-                    parts = query.split("|")
-                    jobs = exa.search_job_boards(
-                        job_title=parts[0], location=parts[1], num_results=num_results
+    board_name = {
+        SearchMode.ALL_BOARDS: "all job boards",
+        SearchMode.INDEED: "Indeed",
+        SearchMode.LINKEDIN: "LinkedIn",
+        SearchMode.GOOGLE: "Google Jobs",
+        SearchMode.CAREERS_PAGE: "careers page",
+    }.get(mode, "jobs")
+
+    with st.spinner(f"Scraping {board_name} with Playwright + Claude..."):
+        try:
+            applier = JobApplier(config, profile)
+
+            async def do_search():
+                try:
+                    run = await applier.run_search(
+                        mode=mode,
+                        job_title=job_title,
+                        location=location,
+                        careers_url=careers_url,
                     )
-                    st.session_state.jobs = jobs
-                    st.session_state.companies = []
+                    return run.jobs_found
+                finally:
+                    await applier.cleanup()
 
-                st.session_state.step = "review"
-                st.rerun()
+            jobs = asyncio.run(do_search())
+            st.session_state.jobs = jobs
+            st.session_state.step = "review"
+            st.rerun()
 
-            except Exception as e:
-                st.error(f"Search failed: {e}")
+        except Exception as e:
+            st.error(f"Search failed: {e}")
 
 
 def render_review_step():
     """Step 4: Review found jobs and select which to apply to."""
-    st.markdown('<div class="step-header">Step 4: Review Found Jobs</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="step-header">Step 4: Review Found Jobs</div>',
+        unsafe_allow_html=True,
+    )
 
-    companies = st.session_state.companies
     jobs = st.session_state.jobs
 
-    # Show companies if we did a company search
-    if companies:
-        st.markdown(f"**Found {len(companies)} companies**")
-        for i, company in enumerate(companies):
-            with st.expander(f"{company.name} — {company.url}"):
-                st.markdown(company.description[:300] if company.description else "*No description*")
-                if company.careers_url:
-                    st.markdown(f"Careers page: {company.careers_url}")
-                else:
-                    st.markdown("*No careers page found*")
-
-        if st.button("Browse careers pages for jobs (uses Browserbase)", type="primary"):
-            st.info(
-                "This will open a cloud browser to scan each company's careers page. "
-                "Jobs found will appear below."
-            )
-            config = st.session_state.config
-            profile = st.session_state.profile
-
-            async def browse_companies():
-                applier = JobApplier(config, profile)
-                applier.set_status_callback(status_callback)
-                all_jobs = []
-                try:
-                    await applier.browser_agent.start_session()
-                    for company in companies:
-                        if company.careers_url:
-                            found = await applier.discover_jobs_at_company(company)
-                            all_jobs.extend(found)
-                finally:
-                    await applier.browser_agent.end_session()
-                return all_jobs
-
-            with st.spinner("Browsing careers pages..."):
-                try:
-                    discovered = asyncio.run(browse_companies())
-                    st.session_state.jobs = discovered
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Browser error: {e}")
-            return
-
-    # Show jobs
     if not jobs:
         st.info("No jobs found yet. Go back to search to find jobs.")
         return
@@ -501,10 +481,11 @@ def render_review_step():
         with col_info:
             company_str = f" at **{job.company}**" if job.company else ""
             location_str = f" | {job.location}" if job.location else ""
+            source_str = f" ({job.source})" if job.source else ""
             st.markdown(
                 f'<div class="job-card">'
                 f"<h4>{job.title}</h4>"
-                f"<p>{company_str}{location_str}</p>"
+                f"<p>{company_str}{location_str}{source_str}</p>"
                 f'<p style="font-size:0.8rem; color:#666;">{job.url}</p>'
                 f"</div>",
                 unsafe_allow_html=True,
@@ -521,7 +502,10 @@ def render_review_step():
 
 def render_apply_step():
     """Step 5: Apply to selected jobs."""
-    st.markdown('<div class="step-header">Step 5: Apply to Jobs</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="step-header">Step 5: Apply to Jobs</div>',
+        unsafe_allow_html=True,
+    )
 
     config = st.session_state.config
     profile = st.session_state.profile
@@ -529,7 +513,7 @@ def render_apply_step():
     selected = st.session_state.selected_jobs
 
     if not config:
-        st.warning("Please configure your API keys first.")
+        st.warning("Please configure your API key first.")
         return
 
     if not selected:
@@ -539,13 +523,14 @@ def render_apply_step():
     selected_jobs = [jobs[i] for i in selected if i < len(jobs)]
 
     st.markdown(f"Ready to apply to **{len(selected_jobs)}** jobs.")
-    st.markdown("The browser agent will:")
     st.markdown(
-        "1. Open each job page in a cloud browser\n"
+        "The local Playwright browser will:\n"
+        "1. Open each job page\n"
         "2. Find and click the Apply button\n"
-        "3. Fill in your profile information\n"
-        "4. Upload your resume\n"
-        "5. Submit the application"
+        "3. Ask Claude to analyze the form\n"
+        "4. Fill in your profile information\n"
+        "5. Upload your resume\n"
+        "6. Submit the application"
     )
 
     st.warning(
@@ -558,28 +543,17 @@ def render_apply_step():
         st.session_state.status_log = []
         progress_bar = st.progress(0)
         status_area = st.empty()
-        results_area = st.container()
 
         async def run_applications():
             applier = JobApplier(config, profile)
             applier.set_status_callback(status_callback)
-            results = []
-            await applier.browser_agent.start_session()
             try:
-                for idx, job in enumerate(selected_jobs):
-                    result = await applier.apply_to_job(job)
-                    results.append(result)
-                    progress = (idx + 1) / len(selected_jobs)
-                    progress_bar.progress(progress)
-                    status_area.markdown(
-                        f"**[{idx + 1}/{len(selected_jobs)}]** "
-                        f"{job.title} — {result.status}"
-                    )
+                results = await applier.run_apply(selected_jobs)
             finally:
-                await applier.browser_agent.end_session()
+                await applier.cleanup()
             return results
 
-        with st.spinner("Applying to jobs..."):
+        with st.spinner("Applying to jobs with Playwright + Claude..."):
             try:
                 results = asyncio.run(run_applications())
                 st.session_state.applications = results
@@ -591,7 +565,10 @@ def render_apply_step():
 
 def render_results_step():
     """Step 6: Show results."""
-    st.markdown('<div class="step-header">Step 6: Application Results</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="step-header">Step 6: Application Results</div>',
+        unsafe_allow_html=True,
+    )
 
     applications = st.session_state.applications
 
@@ -604,6 +581,7 @@ def render_results_step():
     submitted = sum(1 for a in applications if a.status == "submitted")
     failed = sum(1 for a in applications if a.status == "failed")
     manual = sum(1 for a in applications if a.status == "requires_manual")
+    no_form = sum(1 for a in applications if a.status == "no_form_found")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -627,7 +605,7 @@ def render_results_step():
     with col4:
         st.markdown(
             f'<div class="metric-container">Needs Manual<br/>'
-            f'<span style="font-size:2rem; font-weight:bold; color:#f57f17;">{manual}</span></div>',
+            f'<span style="font-size:2rem; font-weight:bold; color:#f57f17;">{manual + no_form}</span></div>',
             unsafe_allow_html=True,
         )
 
@@ -645,7 +623,8 @@ def render_results_step():
         st.markdown(
             f'<div class="job-card">'
             f"<h4>{app_result.job.title}</h4>"
-            f'<p><span class="status-badge {status_class}">{app_result.status.upper()}</span></p>'
+            f'<p><span class="status-badge {status_class}">'
+            f"{app_result.status.upper().replace('_', ' ')}</span></p>"
             f"<p>{app_result.message}</p>"
             f'<p style="font-size:0.8rem; color:#666;">{app_result.job.url}</p>'
             f"</div>",
@@ -681,7 +660,6 @@ def render_results_step():
 
     if st.button("Start New Search"):
         st.session_state.jobs = []
-        st.session_state.companies = []
         st.session_state.selected_jobs = []
         st.session_state.applications = []
         st.session_state.status_log = []
@@ -709,8 +687,8 @@ def main():
         unsafe_allow_html=True,
     )
     st.markdown(
-        "Discover jobs with **Exa AI** search and apply automatically with "
-        "**Browserbase** cloud browsers.",
+        "Find and apply to jobs automatically using **Playwright** (free, local browser) "
+        "and **Claude** (AI page understanding).",
     )
 
     render_sidebar()

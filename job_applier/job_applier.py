@@ -1,10 +1,11 @@
 """Main Job Applier orchestrator.
 
-Coordinates the full pipeline:
-1. Search for companies/jobs using Exa
-2. Discover job listings on careers pages using Browserbase
-3. Apply to matching jobs automatically
-4. Track results and generate reports
+Coordinates the full pipeline using free tools:
+1. Scrape job boards with Playwright for job discovery
+2. Use Claude to parse listings from raw HTML
+3. Navigate to application pages with Playwright
+4. Use Claude to analyze forms and fill them
+5. Track results and generate reports
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from typing import Optional
 from job_applier.applicant_profile import ApplicantProfile
 from job_applier.browser_agent import ApplicationResult, BrowserAgent
 from job_applier.config import Config
-from job_applier.exa_search import Company, ExaJobSearch, JobListing
+from job_applier.job_scraper import Company, JobListing, JobScraper
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +26,11 @@ logger = logging.getLogger(__name__)
 class SearchMode(str, Enum):
     """How to discover jobs."""
 
-    COMPANIES = "companies"  # Search for companies, then find their jobs
-    DIRECT = "direct"  # Search for job listings directly
-    JOB_BOARDS = "job_boards"  # Search specific job boards
+    ALL_BOARDS = "all_boards"  # Scrape Indeed + LinkedIn + Google Jobs
+    INDEED = "indeed"
+    LINKEDIN = "linkedin"
+    GOOGLE = "google"
+    CAREERS_PAGE = "careers_page"  # Scrape a specific company careers URL
     URLS = "urls"  # Apply to specific URLs provided by the user
 
 
@@ -39,7 +42,6 @@ class ApplicationRun:
     started_at: str = ""
     search_mode: str = ""
     query: str = ""
-    companies_found: list[Company] = field(default_factory=list)
     jobs_found: list[JobListing] = field(default_factory=list)
     applications: list[ApplicationResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -56,7 +58,6 @@ class ApplicationRun:
         return {
             "search_mode": self.search_mode,
             "query": self.query,
-            "companies_found": len(self.companies_found),
             "jobs_found": len(self.jobs_found),
             "applications_submitted": self.total_applied,
             "applications_failed": self.total_failed,
@@ -70,7 +71,7 @@ class JobApplier:
     def __init__(self, config: Config, profile: ApplicantProfile):
         self.config = config
         self.profile = profile
-        self.exa_search = ExaJobSearch(config)
+        self.scraper = JobScraper(config)
         self.browser_agent = BrowserAgent(config)
         self._current_run: Optional[ApplicationRun] = None
         self._on_status_update = None
@@ -84,60 +85,70 @@ class JobApplier:
         if self._on_status_update:
             self._on_status_update(message)
 
-    async def search_companies(self, query: str) -> list[Company]:
-        """Step 1a: Discover companies matching a query."""
-        self._status(f"Searching for companies: {query}")
-        companies = self.exa_search.discover_and_enrich(
-            company_query=query,
-            job_titles=self.profile.desired_titles or self.config.job_titles,
-        )
-        self._status(f"Found {len(companies)} companies")
-        return companies
+    # ------------------------------------------------------------------
+    # Search methods
+    # ------------------------------------------------------------------
 
-    async def search_jobs_direct(self, query: str) -> list[JobListing]:
-        """Step 1b: Search for job listings directly."""
-        self._status(f"Searching for jobs: {query}")
-        jobs = self.exa_search.search_jobs(query=query)
-        self._status(f"Found {len(jobs)} job listings")
-        return jobs
-
-    async def search_job_boards(
+    async def search_all_boards(
         self, job_title: str, location: str = "Remote"
     ) -> list[JobListing]:
-        """Step 1c: Search job boards for positions."""
-        self._status(f"Searching job boards: {job_title} in {location}")
-        jobs = self.exa_search.search_job_boards(
-            job_title=job_title, location=location
-        )
-        self._status(f"Found {len(jobs)} job board listings")
+        """Search Indeed + LinkedIn + Google Jobs in parallel."""
+        self._status(f"Searching all job boards: {job_title} in {location}")
+        jobs = await self.scraper.search_all_boards(job_title, location)
+        self._status(f"Found {len(jobs)} unique jobs across all boards")
         return jobs
 
-    async def discover_jobs_at_company(self, company: Company) -> list[JobListing]:
-        """Step 2: Use browser to find jobs on a company's careers page."""
-        if not company.careers_url:
-            self._status(f"No careers URL for {company.name}, skipping")
-            return []
+    async def search_indeed(
+        self, job_title: str, location: str = "Remote"
+    ) -> list[JobListing]:
+        """Search Indeed only."""
+        self._status(f"Searching Indeed: {job_title} in {location}")
+        jobs = await self.scraper.scrape_indeed(
+            job_title, location, self.config.max_results_per_board
+        )
+        self._status(f"Indeed: found {len(jobs)} jobs")
+        return jobs
 
-        self._status(f"Browsing careers page: {company.name}")
-        try:
-            jobs = await self.browser_agent.discover_jobs_on_page(
-                careers_url=company.careers_url,
-                target_titles=self.profile.desired_titles or self.config.job_titles,
-            )
-            for job in jobs:
-                job.company = company.name
-            self._status(f"Found {len(jobs)} matching jobs at {company.name}")
-            return jobs
-        except Exception as e:
-            self._status(f"Error browsing {company.name}: {e}")
-            return []
+    async def search_linkedin(
+        self, job_title: str, location: str = "Remote"
+    ) -> list[JobListing]:
+        """Search LinkedIn only."""
+        self._status(f"Searching LinkedIn: {job_title} in {location}")
+        jobs = await self.scraper.scrape_linkedin(
+            job_title, location, self.config.max_results_per_board
+        )
+        self._status(f"LinkedIn: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_google(
+        self, job_title: str, location: str = "Remote"
+    ) -> list[JobListing]:
+        """Search Google Jobs only."""
+        self._status(f"Searching Google Jobs: {job_title} in {location}")
+        jobs = await self.scraper.scrape_google_jobs(
+            job_title, location, self.config.max_results_per_board
+        )
+        self._status(f"Google Jobs: found {len(jobs)} jobs")
+        return jobs
+
+    async def search_careers_page(
+        self, careers_url: str, target_titles: Optional[list[str]] = None,
+    ) -> list[JobListing]:
+        """Scrape a specific company careers page."""
+        titles = target_titles or self.profile.desired_titles or self.config.job_titles
+        self._status(f"Scraping careers page: {careers_url}")
+        jobs = await self.scraper.scrape_careers_page(careers_url, titles)
+        self._status(f"Found {len(jobs)} jobs on careers page")
+        return jobs
+
+    # ------------------------------------------------------------------
+    # Application
+    # ------------------------------------------------------------------
 
     async def apply_to_job(self, job: JobListing) -> ApplicationResult:
-        """Step 3: Apply to a single job."""
+        """Apply to a single job."""
         self._status(f"Applying to: {job.title} at {job.company or job.url}")
-        form_data = self.profile.to_form_data(
-            company=job.company, title=job.title
-        )
+        form_data = self.profile.to_form_data(company=job.company, title=job.title)
         result = await self.browser_agent.apply_to_job(
             job=job,
             applicant_data=form_data,
@@ -149,131 +160,73 @@ class JobApplier:
             self._status(f"Could not apply to {job.title}: {result.status}")
         return result
 
-    async def run_company_search(self, query: str, auto_apply: bool = False) -> ApplicationRun:
-        """Full pipeline: search companies -> find jobs -> optionally apply."""
-        run = ApplicationRun(
-            id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-            started_at=datetime.now().isoformat(),
-            search_mode=SearchMode.COMPANIES,
-            query=query,
-        )
-        self._current_run = run
+    # ------------------------------------------------------------------
+    # Full pipeline methods
+    # ------------------------------------------------------------------
 
-        # Step 1: Find companies
-        run.companies_found = await self.search_companies(query)
-
-        # Step 2: Browse each company's careers page
-        for company in run.companies_found:
-            try:
-                jobs = await self.discover_jobs_at_company(company)
-                run.jobs_found.extend(jobs)
-            except Exception as e:
-                run.errors.append(f"Error at {company.name}: {e}")
-
-        # Step 3: Apply if requested
-        if auto_apply and run.jobs_found:
-            await self.browser_agent.start_session()
-            try:
-                for job in run.jobs_found:
-                    try:
-                        result = await self.apply_to_job(job)
-                        run.applications.append(result)
-                    except Exception as e:
-                        run.errors.append(f"Error applying to {job.title}: {e}")
-            finally:
-                await self.browser_agent.end_session()
-
-        self._status(f"Run complete: {run.summary()}")
-        return run
-
-    async def run_direct_search(self, query: str, auto_apply: bool = False) -> ApplicationRun:
-        """Full pipeline: search jobs directly -> optionally apply."""
-        run = ApplicationRun(
-            id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-            started_at=datetime.now().isoformat(),
-            search_mode=SearchMode.DIRECT,
-            query=query,
-        )
-        self._current_run = run
-
-        run.jobs_found = await self.search_jobs_direct(query)
-
-        if auto_apply and run.jobs_found:
-            await self.browser_agent.start_session()
-            try:
-                for job in run.jobs_found:
-                    try:
-                        result = await self.apply_to_job(job)
-                        run.applications.append(result)
-                    except Exception as e:
-                        run.errors.append(f"Error applying to {job.title}: {e}")
-            finally:
-                await self.browser_agent.end_session()
-
-        self._status(f"Run complete: {run.summary()}")
-        return run
-
-    async def run_job_board_search(
+    async def run_search(
         self,
-        job_title: str,
+        mode: SearchMode,
+        job_title: str = "",
         location: str = "Remote",
-        auto_apply: bool = False,
+        careers_url: str = "",
+        urls: Optional[list[str]] = None,
     ) -> ApplicationRun:
-        """Full pipeline: search job boards -> optionally apply."""
+        """Run a search and return the results (no auto-apply)."""
         run = ApplicationRun(
             id=datetime.now().strftime("%Y%m%d_%H%M%S"),
             started_at=datetime.now().isoformat(),
-            search_mode=SearchMode.JOB_BOARDS,
-            query=f"{job_title} in {location}",
+            search_mode=mode,
+            query=f"{job_title} in {location}" if job_title else careers_url or "direct URLs",
         )
         self._current_run = run
 
-        run.jobs_found = await self.search_job_boards(job_title, location)
+        try:
+            if mode == SearchMode.ALL_BOARDS:
+                run.jobs_found = await self.search_all_boards(job_title, location)
+            elif mode == SearchMode.INDEED:
+                run.jobs_found = await self.search_indeed(job_title, location)
+            elif mode == SearchMode.LINKEDIN:
+                run.jobs_found = await self.search_linkedin(job_title, location)
+            elif mode == SearchMode.GOOGLE:
+                run.jobs_found = await self.search_google(job_title, location)
+            elif mode == SearchMode.CAREERS_PAGE:
+                run.jobs_found = await self.search_careers_page(careers_url)
+            elif mode == SearchMode.URLS:
+                run.jobs_found = [
+                    JobListing(title=f"Job at {u}", url=u, source="user")
+                    for u in (urls or [])
+                ]
+        except Exception as e:
+            run.errors.append(str(e))
+            self._status(f"Search error: {e}")
 
-        if auto_apply and run.jobs_found:
-            await self.browser_agent.start_session()
-            try:
-                for job in run.jobs_found:
-                    try:
-                        result = await self.apply_to_job(job)
-                        run.applications.append(result)
-                    except Exception as e:
-                        run.errors.append(f"Error applying to {job.title}: {e}")
-            finally:
-                await self.browser_agent.end_session()
-
-        self._status(f"Run complete: {run.summary()}")
+        self._status(f"Search complete: {len(run.jobs_found)} jobs found")
         return run
 
-    async def apply_to_urls(self, urls: list[str]) -> ApplicationRun:
-        """Apply to specific job URLs provided by the user."""
-        run = ApplicationRun(
-            id=datetime.now().strftime("%Y%m%d_%H%M%S"),
-            started_at=datetime.now().isoformat(),
-            search_mode=SearchMode.URLS,
-            query=f"{len(urls)} direct URLs",
-        )
-        self._current_run = run
-
-        run.jobs_found = [
-            JobListing(title=f"Job at {url}", url=url, source="user")
-            for url in urls
-        ]
-
+    async def run_apply(
+        self, jobs: list[JobListing]
+    ) -> list[ApplicationResult]:
+        """Apply to a list of jobs."""
+        results = []
         await self.browser_agent.start_session()
         try:
-            for job in run.jobs_found:
+            for job in jobs:
                 try:
                     result = await self.apply_to_job(job)
-                    run.applications.append(result)
+                    results.append(result)
                 except Exception as e:
-                    run.errors.append(f"Error applying to {job.url}: {e}")
+                    self._status(f"Error applying to {job.title}: {e}")
+                    results.append(
+                        ApplicationResult(
+                            job=job, success=False, status="failed", message=str(e)
+                        )
+                    )
         finally:
             await self.browser_agent.end_session()
-
-        self._status(f"Run complete: {run.summary()}")
-        return run
+        return results
 
     async def cleanup(self):
-        """Clean up resources."""
+        """Clean up all resources."""
         await self.browser_agent.end_session()
+        await self.scraper.close()

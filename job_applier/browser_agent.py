@@ -1,23 +1,23 @@
-"""Browser automation agent using Browserbase + Stagehand.
+"""Browser automation agent using local Playwright + Claude.
 
-Handles the browser-level automation:
-- Navigating to careers pages
-- Discovering job listings on a page
-- Filling out application forms
-- Uploading resumes
-- Submitting applications
+Replaces Browserbase + Stagehand with a free stack:
+- Playwright runs a local browser (Chromium/Firefox/WebKit)
+- Claude analyzes page HTML to understand forms and generate actions
+- Playwright executes the actions (click, fill, upload, submit)
 """
 
 import asyncio
+import base64
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from stagehand import AsyncStagehand
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 
 from job_applier.config import Config
-from job_applier.exa_search import JobListing
+from job_applier.job_scraper import JobListing
 
 logger = logging.getLogger(__name__)
 
@@ -35,106 +35,56 @@ class ApplicationResult:
 
 
 class BrowserAgent:
-    """Automates job applications using Browserbase cloud browsers + Stagehand AI."""
+    """Automates job applications using local Playwright + Claude for AI understanding."""
 
     def __init__(self, config: Config):
         self.config = config
-        self._client: Optional[AsyncStagehand] = None
-        self._session = None
+        self._playwright = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
+        self._claude = None
 
-    async def _get_client(self) -> AsyncStagehand:
-        """Get or create the Stagehand client."""
-        if self._client is None:
-            self._client = AsyncStagehand(
-                browserbase_api_key=self.config.browserbase_api_key,
-                browserbase_project_id=self.config.browserbase_project_id,
-                model_api_key=self.config.model_api_key,
-            )
-        return self._client
+    def _get_claude(self):
+        """Lazy-init the Anthropic client."""
+        if self._claude is None:
+            import anthropic
+            self._claude = anthropic.Anthropic(api_key=self.config.anthropic_api_key)
+        return self._claude
 
     async def start_session(self) -> None:
-        """Start a new browser session."""
-        client = await self._get_client()
-        self._session = await client.sessions.start(
-            model_name=self.config.model_name,
+        """Start a new local browser session."""
+        self._playwright = await async_playwright().start()
+        launcher = getattr(self._playwright, self.config.browser_type)
+        self._browser = await launcher.launch(
+            headless=self.config.headless,
+            slow_mo=self.config.slow_mo,
         )
-        logger.info(f"Browser session started: {self._session}")
+        self._context = await self._browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        self._page = await self._context.new_page()
+        logger.info("Local browser session started")
 
     async def end_session(self) -> None:
-        """End the current browser session."""
-        if self._session:
-            try:
-                await self._session.end()
-            except Exception as e:
-                logger.warning(f"Error ending session: {e}")
-            self._session = None
-
-    async def discover_jobs_on_page(
-        self,
-        careers_url: str,
-        target_titles: list[str],
-    ) -> list[JobListing]:
-        """Navigate to a careers page and extract matching job listings."""
-        if not self._session:
-            await self.start_session()
-
-        logger.info(f"Discovering jobs at: {careers_url}")
-        await self._session.navigate(url=careers_url)
-
-        # Use Stagehand to extract job listings from the page
-        titles_str = ", ".join(target_titles)
-        extract_result = await self._session.extract(
-            instruction=(
-                f"Extract all job listings from this page. "
-                f"Focus on positions related to: {titles_str}. "
-                f"For each job, extract the title, URL/link, and location if available."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "jobs": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "url": {"type": "string"},
-                                "location": {"type": "string"},
-                            },
-                            "required": ["title"],
-                        },
-                    }
-                },
-                "required": ["jobs"],
-            },
-        )
-
-        jobs = []
-        if extract_result and extract_result.data:
-            raw = extract_result.data
-            # Handle both dict and object-style access
-            job_list = raw.get("jobs", []) if isinstance(raw, dict) else getattr(raw, "jobs", [])
-            for job_data in job_list:
-                if isinstance(job_data, dict):
-                    title = job_data.get("title", "")
-                    url = job_data.get("url", careers_url)
-                    location = job_data.get("location", "")
-                else:
-                    title = getattr(job_data, "title", "")
-                    url = getattr(job_data, "url", careers_url)
-                    location = getattr(job_data, "location", "")
-
-                jobs.append(
-                    JobListing(
-                        title=title,
-                        url=url,
-                        location=location,
-                        source="browser",
-                    )
-                )
-
-        logger.info(f"Found {len(jobs)} jobs on {careers_url}")
-        return jobs
+        """Close the browser session."""
+        if self._page:
+            await self._page.close()
+            self._page = None
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
 
     async def apply_to_job(
         self,
@@ -142,110 +92,47 @@ class BrowserAgent:
         applicant_data: dict,
         resume_path: Optional[str] = None,
     ) -> ApplicationResult:
-        """Navigate to a job listing and attempt to fill out the application.
-
-        Args:
-            job: The job listing to apply to.
-            applicant_data: Dict with keys like name, email, phone,
-                           linkedin, cover_letter, etc.
-            resume_path: Local path to resume PDF to upload.
-        """
-        if not self._session:
+        """Navigate to a job and attempt to fill out the application form."""
+        if not self._page:
             await self.start_session()
 
+        page = self._page
         logger.info(f"Applying to: {job.title} at {job.url}")
 
         try:
-            await self._session.navigate(url=job.url)
+            await page.goto(
+                job.url,
+                timeout=self.config.application_timeout_seconds * 1000,
+                wait_until="domcontentloaded",
+            )
+            await page.wait_for_timeout(2000)
 
-            # Step 1: Look for and click an "Apply" button
-            apply_action = await self._session.observe(
-                instruction=(
-                    "Find the 'Apply', 'Apply Now', 'Submit Application', "
-                    "or similar button/link to start the job application."
+            # Step 1: Find and click the Apply button
+            clicked_apply = await self._find_and_click_apply(page)
+            if clicked_apply:
+                await page.wait_for_timeout(2000)
+
+            # Step 2: Analyze the form with Claude and get fill instructions
+            form_analysis = await self._analyze_form_with_claude(page, applicant_data)
+
+            if not form_analysis:
+                return ApplicationResult(
+                    job=job,
+                    success=False,
+                    status="no_form_found",
+                    message="Could not find an application form on this page",
                 )
+
+            # Step 3: Execute the fill instructions
+            fields_filled = await self._execute_form_fill(
+                page, form_analysis, applicant_data, resume_path
             )
 
-            if apply_action and apply_action.data and apply_action.data.result:
-                await self._session.act(input=apply_action.data.result[0])
-                logger.info("Clicked apply button")
-            else:
-                logger.info("No explicit apply button found, looking for form directly")
+            # Step 4: Submit the form
+            submitted = await self._find_and_click_submit(page)
 
-            # Step 2: Fill in the application form fields
-            fields_filled = []
-
-            # Fill name
-            if applicant_data.get("first_name"):
-                await self._try_fill_field(
-                    "first name field",
-                    applicant_data["first_name"],
-                    fields_filled,
-                )
-            if applicant_data.get("last_name"):
-                await self._try_fill_field(
-                    "last name field",
-                    applicant_data["last_name"],
-                    fields_filled,
-                )
-            if applicant_data.get("full_name") and not applicant_data.get("first_name"):
-                await self._try_fill_field(
-                    "name or full name field",
-                    applicant_data["full_name"],
-                    fields_filled,
-                )
-
-            # Fill email
-            if applicant_data.get("email"):
-                await self._try_fill_field(
-                    "email address field",
-                    applicant_data["email"],
-                    fields_filled,
-                )
-
-            # Fill phone
-            if applicant_data.get("phone"):
-                await self._try_fill_field(
-                    "phone number field",
-                    applicant_data["phone"],
-                    fields_filled,
-                )
-
-            # Fill LinkedIn
-            if applicant_data.get("linkedin"):
-                await self._try_fill_field(
-                    "LinkedIn URL or profile field",
-                    applicant_data["linkedin"],
-                    fields_filled,
-                )
-
-            # Fill portfolio/website
-            if applicant_data.get("website"):
-                await self._try_fill_field(
-                    "website, portfolio, or personal URL field",
-                    applicant_data["website"],
-                    fields_filled,
-                )
-
-            # Fill cover letter
-            if applicant_data.get("cover_letter"):
-                await self._try_fill_field(
-                    "cover letter or additional information text area",
-                    applicant_data["cover_letter"],
-                    fields_filled,
-                )
-
-            # Step 3: Upload resume if path provided
-            if resume_path:
-                await self._try_upload_resume(resume_path, fields_filled)
-
-            # Step 4: Handle any remaining required fields using autonomous mode
-            await self._handle_remaining_fields(applicant_data, fields_filled)
-
-            # Step 5: Submit the application
-            submit_result = await self._try_submit(fields_filled)
-
-            if submit_result:
+            if submitted:
+                await page.wait_for_timeout(3000)
                 return ApplicationResult(
                     job=job,
                     success=True,
@@ -258,10 +145,7 @@ class BrowserAgent:
                     job=job,
                     success=False,
                     status="requires_manual",
-                    message=(
-                        f"Form partially filled but could not submit. "
-                        f"Fields filled: {', '.join(fields_filled)}"
-                    ),
+                    message=f"Form filled but could not find submit button. Fields: {', '.join(fields_filled)}",
                     fields_filled=fields_filled,
                 )
 
@@ -274,98 +158,204 @@ class BrowserAgent:
                 message=str(e),
             )
 
-    async def _try_fill_field(
-        self,
-        field_description: str,
-        value: str,
-        fields_filled: list[str],
-    ) -> bool:
-        """Attempt to find and fill a form field."""
-        try:
-            observe_result = await self._session.observe(
-                instruction=f"Find the {field_description} in the application form"
-            )
-            if observe_result and observe_result.data and observe_result.data.result:
-                action = observe_result.data.result[0]
-                # Modify action to include the value to type
-                if isinstance(action, dict):
-                    action["args"] = [value]
-                await self._session.act(input=action)
-                fields_filled.append(field_description)
-                logger.info(f"Filled: {field_description}")
-                return True
-        except Exception as e:
-            logger.debug(f"Could not fill {field_description}: {e}")
+    async def _find_and_click_apply(self, page: Page) -> bool:
+        """Try to find and click an Apply/Apply Now button."""
+        apply_selectors = [
+            'a:has-text("Apply Now")',
+            'button:has-text("Apply Now")',
+            'a:has-text("Apply")',
+            'button:has-text("Apply")',
+            'a:has-text("Submit Application")',
+            'button:has-text("Submit Application")',
+            '[data-testid*="apply"]',
+            '[class*="apply"]',
+            '[id*="apply"]',
+        ]
+        for selector in apply_selectors:
+            try:
+                el = page.locator(selector).first
+                if await el.is_visible(timeout=1000):
+                    await el.click()
+                    logger.info(f"Clicked apply button: {selector}")
+                    return True
+            except Exception:
+                continue
+        logger.info("No apply button found, looking for form directly")
         return False
 
-    async def _try_upload_resume(
+    async def _analyze_form_with_claude(
         self,
-        resume_path: str,
-        fields_filled: list[str],
-    ) -> bool:
-        """Attempt to upload a resume file."""
-        try:
-            observe_result = await self._session.observe(
-                instruction=(
-                    "Find the file upload input for resume, CV, or document upload"
-                )
-            )
-            if observe_result and observe_result.data and observe_result.data.result:
-                action = observe_result.data.result[0]
-                if isinstance(action, dict):
-                    action["args"] = [resume_path]
-                await self._session.act(input=action)
-                fields_filled.append("resume_upload")
-                logger.info("Uploaded resume")
-                return True
-        except Exception as e:
-            logger.debug(f"Could not upload resume: {e}")
-        return False
-
-    async def _handle_remaining_fields(
-        self,
+        page: Page,
         applicant_data: dict,
-        fields_filled: list[str],
-    ) -> None:
-        """Use Stagehand's execute to handle any remaining required fields."""
-        try:
-            extra_info = json.dumps(
-                {k: v for k, v in applicant_data.items() if k not in ("cover_letter",)},
-                indent=2,
-            )
-            await self._session.execute(
-                execute_options={
-                    "instruction": (
-                        f"Look at the application form on this page. "
-                        f"Fill in any remaining REQUIRED fields that are empty "
-                        f"using this applicant information: {extra_info}. "
-                        f"Already filled: {', '.join(fields_filled)}. "
-                        f"Do NOT submit the form yet."
-                    ),
-                    "max_steps": 5,
-                },
-                agent_config={"model": self.config.model_name},
-            )
-            fields_filled.append("remaining_required_fields")
-        except Exception as e:
-            logger.debug(f"Could not handle remaining fields: {e}")
+    ) -> Optional[list[dict]]:
+        """Use Claude to analyze the page and produce form-filling instructions.
 
-    async def _try_submit(self, fields_filled: list[str]) -> bool:
-        """Attempt to submit the application form."""
+        Returns a list of action dicts:
+        [
+          {"action": "fill", "selector": "input#email", "value": "user@example.com"},
+          {"action": "select", "selector": "select#country", "value": "US"},
+          {"action": "check", "selector": "input#agree"},
+          {"action": "upload", "selector": "input[type=file]", "file": true},
+        ]
+        """
+        # Get a simplified snapshot of the form elements on the page
+        form_snapshot = await page.evaluate("""() => {
+            const elements = [];
+            const inputs = document.querySelectorAll(
+                'input, textarea, select, button[type="submit"]'
+            );
+            for (const el of inputs) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 && rect.height === 0) continue;
+                elements.push({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.type || '',
+                    name: el.name || '',
+                    id: el.id || '',
+                    placeholder: el.placeholder || '',
+                    ariaLabel: el.getAttribute('aria-label') || '',
+                    label: (() => {
+                        if (el.id) {
+                            const lbl = document.querySelector(`label[for="${el.id}"]`);
+                            if (lbl) return lbl.textContent.trim();
+                        }
+                        const parent = el.closest('label, .form-group, .field, [class*="field"]');
+                        if (parent) {
+                            const lbl = parent.querySelector('label, .label, [class*="label"]');
+                            if (lbl) return lbl.textContent.trim();
+                        }
+                        return '';
+                    })(),
+                    required: el.required || el.getAttribute('aria-required') === 'true',
+                    options: el.tagName === 'SELECT'
+                        ? Array.from(el.options).map(o => ({value: o.value, text: o.text}))
+                        : undefined,
+                    value: el.value || '',
+                    cssSelector: (() => {
+                        if (el.id) return `#${CSS.escape(el.id)}`;
+                        if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+                        return '';
+                    })(),
+                });
+            }
+            return elements;
+        }""")
+
+        if not form_snapshot:
+            return None
+
+        # Only include elements that have some identifiable selector
+        form_snapshot = [e for e in form_snapshot if e.get("cssSelector")]
+
+        if not form_snapshot:
+            return None
+
+        applicant_json = json.dumps(applicant_data, indent=2)
+        form_json = json.dumps(form_snapshot, indent=2)
+
+        prompt = (
+            "You are filling out a job application form. Below are the form fields "
+            "found on the page and the applicant's information.\n\n"
+            f"FORM FIELDS:\n{form_json}\n\n"
+            f"APPLICANT DATA:\n{applicant_json}\n\n"
+            "For each field that should be filled, produce a JSON action object:\n"
+            '- To type text: {"action": "fill", "selector": "<css>", "value": "<text>"}\n'
+            '- To select a dropdown: {"action": "select", "selector": "<css>", "value": "<option_value>"}\n'
+            '- To check a checkbox: {"action": "check", "selector": "<css>"}\n'
+            '- For file upload fields: {"action": "upload", "selector": "<css>"}\n\n'
+            "Return ONLY a JSON array of action objects. Skip fields that are already "
+            "filled or that don't match any applicant data. Use the cssSelector from "
+            "the form fields. For dropdowns, pick the best matching option value."
+        )
+
         try:
-            observe_result = await self._session.observe(
-                instruction=(
-                    "Find the submit button for this application. "
-                    "Look for 'Submit', 'Submit Application', 'Apply', 'Send', or similar."
-                )
+            client = self._get_claude()
+            response = client.messages.create(
+                model=self.config.claude_model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
             )
-            if observe_result and observe_result.data and observe_result.data.result:
-                await self._session.act(input=observe_result.data.result[0])
-                fields_filled.append("form_submitted")
-                logger.info("Application submitted!")
-                return True
+            text = response.content[0].text.strip()
+
+            json_match = re.search(r"\[.*\]", text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
         except Exception as e:
-            logger.debug(f"Could not submit form: {e}")
+            logger.warning(f"Claude form analysis failed: {e}")
+
+        return None
+
+    async def _execute_form_fill(
+        self,
+        page: Page,
+        actions: list[dict],
+        applicant_data: dict,
+        resume_path: Optional[str] = None,
+    ) -> list[str]:
+        """Execute Claude's form-filling instructions via Playwright."""
+        fields_filled = []
+
+        for action in actions:
+            act = action.get("action")
+            selector = action.get("selector", "")
+            value = action.get("value", "")
+
+            if not selector:
+                continue
+
+            try:
+                locator = page.locator(selector).first
+
+                if act == "fill":
+                    await locator.click()
+                    await locator.fill(value)
+                    fields_filled.append(f"fill:{selector}")
+                    logger.info(f"Filled {selector}")
+
+                elif act == "select":
+                    await locator.select_option(value=value)
+                    fields_filled.append(f"select:{selector}")
+                    logger.info(f"Selected {selector} = {value}")
+
+                elif act == "check":
+                    if not await locator.is_checked():
+                        await locator.check()
+                    fields_filled.append(f"check:{selector}")
+                    logger.info(f"Checked {selector}")
+
+                elif act == "upload" and resume_path:
+                    await locator.set_input_files(resume_path)
+                    fields_filled.append("resume_upload")
+                    logger.info(f"Uploaded resume to {selector}")
+
+            except Exception as e:
+                logger.debug(f"Could not execute {act} on {selector}: {e}")
+
+        return fields_filled
+
+    async def _find_and_click_submit(self, page: Page) -> bool:
+        """Try to find and click the submit button."""
+        submit_selectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Submit Application")',
+            'button:has-text("Submit")',
+            'button:has-text("Apply")',
+            'button:has-text("Send Application")',
+            'button:has-text("Send")',
+            '[data-testid*="submit"]',
+        ]
+        for selector in submit_selectors:
+            try:
+                el = page.locator(selector).first
+                if await el.is_visible(timeout=1000):
+                    await el.click()
+                    logger.info(f"Clicked submit: {selector}")
+                    return True
+            except Exception:
+                continue
+
+        logger.warning("Could not find submit button")
         return False
 
 
