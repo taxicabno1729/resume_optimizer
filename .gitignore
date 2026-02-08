@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+*.egg-info/
+dist/
+build/
+uploaded_resume.pdf
+applicant_profile.json
+nltk_data/
